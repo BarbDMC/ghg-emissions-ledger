@@ -1,0 +1,11 @@
+factor_id,country_code,energy_type,activity_unit,co2e_factor,source_dataset,factor_year,retrieved_at
+ref_elec_ec_2026,EC,electricity,kWh,0.15902,Ember via OWID (IEA proxy),2026,2026-11-04T23:10:05Z
+climatiq_diesel_ec_2025,EC,diesel,gallon,10.24268,EPA - 2025 GHG Emission Factors Hub (US proxy),2025,2026-11-04T23:10:05Z
+climatiq_elec_us_2025,US,electricity,kWh,0.349671,EPA - eGRID,2025,2026-11-04T23:10:05Z
+climatiq_diesel_us_2025,US,diesel,gallon,10.24268,EPA - 2025 GHG Emission Factors Hub,2025,2026-11-04T23:10:05Z
+climatiq_elec_gb_2026,GB,electricity,kWh,0.13096,BEIS - Greenhouse gas reporting: conversion factors 2026,2026,2026-11-04T23:10:05Z
+climatiq_diesel_gb_2026,GB,diesel,liter,2.66155,BEIS - Greenhouse gas reporting: conversion factors 2026,2026,2026-11-04T23:10:05Z
+climatiq_elec_de_2025,DE,electricity,kWh,0.353005,UBA - Liste mit Emissionsfaktoren für die Treibhausgasbilanzierung von Organisationen V2.1,2025,2026-11-04T23:10:05Z
+climatiq_diesel_de_2025,DE,diesel,liter,2.686194,UBA - Liste mit Emissionsfaktoren für die Treibhausgasbilanzierung von Organisationen V2.1,2025,2026-11-04T23:10:05Z
+climatiq_elec_fr_2025,FR,electricity,kWh,0.035,ADEME - Base Carbone v23.9,2025,2026-11-04T23:10:05Z
+climatiq_diesel_fr_2026,FR,diesel,liter,2.66155,BEIS - Greenhouse gas reporting: conversion factors 2026 (GB proxy),2026,2026-11-04T23:10:05Z
