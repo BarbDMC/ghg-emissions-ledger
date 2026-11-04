@@ -1,0 +1,13 @@
+.git
+.venv
+.env
+.env.*
+__pycache__/
+*.pyc
+data/
+dags/
+scripts/
+logs/
+target/
+dbt_packages/
+.DS_Store
