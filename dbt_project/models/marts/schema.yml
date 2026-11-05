@@ -8,6 +8,7 @@ models:
         description: MD5 surrogate key of invoice_id.
         tests: [unique, not_null]
       - name: invoice_id
+        description: Unique per row; guarantees deduplication never leaks duplicates into the mart.
         tests: [unique, not_null]
       - name: ghg_scope
         tests:
@@ -18,4 +19,6 @@ models:
       - name: co2e_factor
         tests: [not_null]
       - name: co2e_kg
+        tests: [not_null]
+      - name: co2e_tonnes
         tests: [not_null]

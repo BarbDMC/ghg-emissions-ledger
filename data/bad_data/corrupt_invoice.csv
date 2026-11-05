@@ -1,0 +1,3 @@
+invoice_id,office_id,country_code,issue_date,consumption_start_date,consumption_end_date,energy_type,usage_amount,usage_unit,cost_amount,currency
+INV-NYC-ELE-202610-CORRUPT,OFF_NYC,US,2026-11-05,2026-10-01,2026-10-31,electricity,-15000,kWh,-3450.00,USD
+,OFF_PAR,FR,2026-11-05,2026-10-01,2026-10-31,electricity,27500.00,kWh,6875.00,EUR

@@ -3,7 +3,8 @@ version: 2
 sources:
   - name: raw
     description: Append-only landing tables loaded by the ghg_corporate_ledger_ingestion DAG.
-    schema: raw
+    # Override with --vars '{raw_schema: raw_qa}' to test against a sandbox copy of raw.
+    schema: "{{ var('raw_schema', 'raw') }}"
     tables:
       - name: invoices
         description: Energy invoices as received (all TEXT), one row per file row per ingestion.
