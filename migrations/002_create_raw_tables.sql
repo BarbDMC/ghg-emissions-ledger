@@ -1,6 +1,7 @@
 -- Raw landing tables: every source column is stored as TEXT exactly as received,
 -- plus audit columns. Typing and deduplication happen downstream (staging).
--- Idempotent: runs on first Postgres start and at the beginning of every DAG run.
+-- Applied once per warehouse by the DAG's run_migrations task (tracked in
+-- public.schema_migrations); still idempotent, so re-applying it is harmless.
 
 CREATE SCHEMA IF NOT EXISTS raw;
 
@@ -55,7 +56,3 @@ BEGIN
     END LOOP;
 END;
 $$;
-
-INSERT INTO public.schema_migrations (version)
-VALUES ('20261104_001_create_raw_tables')
-ON CONFLICT (version) DO NOTHING;

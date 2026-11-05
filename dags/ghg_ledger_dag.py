@@ -1,11 +1,16 @@
 """Monthly ingestion of energy invoices and emission factors into the GHG ledger.
 
-Local files -> MinIO landing zone -> PostgreSQL ``raw`` schema (append-only).
+Local files -> MinIO landing zone -> PostgreSQL ``raw`` schema (append-only) -> dbt.
+
+Each run targets one warehouse through the ``target`` param: ``local`` (the Docker
+Postgres) or ``supabase`` (cloud Postgres, configured with SUPABASE_* in .env).
+The run applies pending migrations, appends the landed files and builds the dbt
+models, so either warehouse ends up with ``marts.fct_emissions_ledger``.
 
 Raw tables are never truncated, deleted from or updated: every run appends the
 landed files with their ``source_file`` and a UTC ``ingestion_timestamp``, so the
 full history of what was received is preserved. Deduplication (e.g. corrected
-invoices re-issued with the same ``invoice_id``) belongs to the staging layer.
+invoices re-issued with the same ``invoice_id``) belongs to the dbt staging layer.
 """
 
 from __future__ import annotations
@@ -14,23 +19,31 @@ import csv
 import io
 import logging
 import os
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pendulum
+import psycopg2
 from airflow.decorators import dag, task
-from airflow.providers.postgres.hooks.postgres import PostgresHook
+from airflow.models.param import Param
+from airflow.operators.python import get_current_context
 from minio import Minio
 
 log = logging.getLogger(__name__)
 
-POSTGRES_CONN_ID = "ghg_warehouse"
 DATA_DIR = Path(os.getenv("GHG_DATA_DIR", "/opt/airflow/data"))
-DDL_FILE = Path(os.getenv("GHG_RAW_DDL_FILE", "/opt/airflow/sql/init_raw_tables.sql"))
+MIGRATIONS_DIR = Path(os.getenv("GHG_MIGRATIONS_DIR", "/opt/airflow/migrations"))
+DBT_PROJECT_DIR = os.getenv("GHG_DBT_PROJECT_DIR", "/opt/airflow/dbt_project")
+DBT_BIN = os.getenv("GHG_DBT_BIN", "/home/airflow/dbt_venv/bin/dbt")
 
 BUCKET = os.getenv("GHG_MINIO_BUCKET", "climate-invoices")
 INVOICES_PREFIX = "landing/invoices/"
 FACTORS_KEY = "landing/factors/emission_factors.csv"
+
+TARGETS = ["local", "supabase"]
+DEFAULT_TARGET = os.getenv("WAREHOUSE_TARGET") or "local"
+SUPABASE_REQUIRED = ["SUPABASE_HOST", "SUPABASE_USER", "SUPABASE_PASSWORD"]
 
 INVOICE_COLUMNS = [
     "invoice_id", "office_id", "country_code", "issue_date", "consumption_start_date",
@@ -44,6 +57,44 @@ FACTOR_COLUMNS = [
 AUDIT_COLUMNS = ["source_file", "ingestion_timestamp"]
 
 
+def current_target() -> str:
+    return get_current_context()["params"]["target"]
+
+
+def warehouse_settings(target: str) -> dict:
+    """psycopg2 connection settings for ``target``; fails fast if Supabase is not configured."""
+    if target == "local":
+        return {
+            "host": os.getenv("POSTGRES_HOST", "postgres"),
+            "port": int(os.getenv("POSTGRES_PORT", "5432")),
+            "dbname": os.getenv("POSTGRES_DB", "warehouse"),
+            "user": os.getenv("POSTGRES_USER", "postgres"),
+            "password": os.getenv("POSTGRES_PASSWORD", "postgres"),
+            "sslmode": "disable",
+        }
+    if target == "supabase":
+        missing = [name for name in SUPABASE_REQUIRED if not os.getenv(name)]
+        if missing:
+            raise ValueError(f"Target 'supabase' is not configured: set {', '.join(missing)} "
+                             "in .env and recreate the Airflow container.")
+        return {
+            "host": os.environ["SUPABASE_HOST"],
+            "port": int(os.getenv("SUPABASE_PORT") or "5432"),
+            "dbname": os.getenv("SUPABASE_DB") or "postgres",
+            "user": os.environ["SUPABASE_USER"],
+            "password": os.environ["SUPABASE_PASSWORD"],
+            "sslmode": os.getenv("SUPABASE_SSLMODE") or "require",
+        }
+    raise ValueError(f"Unknown target {target!r}; expected one of {TARGETS}")
+
+
+def connect(target: str):
+    settings = warehouse_settings(target)
+    log.info("Connecting to %s warehouse at %s:%s/%s", target, settings["host"],
+             settings["port"], settings["dbname"])
+    return psycopg2.connect(**settings, connect_timeout=15, application_name="ghg_ledger_dag")
+
+
 def minio_client() -> Minio:
     return Minio(
         os.getenv("GHG_MINIO_ENDPOINT", "minio:9000"),
@@ -51,6 +102,32 @@ def minio_client() -> Minio:
         secret_key=os.getenv("GHG_MINIO_SECRET_KEY", "minioadmin"),
         secure=False,
     )
+
+
+def apply_migrations(conn) -> list[str]:
+    """Apply each pending migrations/*.sql once, in order, recording it in schema_migrations."""
+    with conn, conn.cursor() as cursor:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS public.schema_migrations (
+                version VARCHAR(100) PRIMARY KEY,
+                applied_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            )""")
+        cursor.execute("SELECT version FROM public.schema_migrations")
+        applied = {row[0] for row in cursor.fetchall()}
+
+    newly_applied = []
+    for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        if path.stem in applied:
+            continue
+        with conn, conn.cursor() as cursor:
+            cursor.execute(path.read_text())
+            cursor.execute("INSERT INTO public.schema_migrations (version) VALUES (%s)",
+                           (path.stem,))
+        log.info("Applied migration %s", path.name)
+        newly_applied.append(path.stem)
+    if not newly_applied:
+        log.info("No pending migrations (%d already applied)", len(applied))
+    return newly_applied
 
 
 def append_object(cursor, client: Minio, key: str, table: str, columns: list[str],
@@ -85,17 +162,21 @@ def append_object(cursor, client: Minio, key: str, table: str, columns: list[str
     return rows
 
 
-def append_objects(keys: list[str], table: str, columns: list[str]) -> int:
+def append_objects(target: str, keys: list[str], table: str, columns: list[str]) -> int:
     """Append all objects in a single transaction, so a failed run leaves no partial load."""
     if not keys:
         raise ValueError(f"No objects found in s3://{BUCKET} for {table}")
     client = minio_client()
     ingested_at = datetime.now(timezone.utc).isoformat()
-    with PostgresHook(postgres_conn_id=POSTGRES_CONN_ID).get_conn() as conn:
-        with conn.cursor() as cursor:
+    conn = connect(target)
+    try:
+        with conn, conn.cursor() as cursor:
             total = sum(append_object(cursor, client, key, table, columns, ingested_at)
                         for key in keys)
-    log.info("Committed %d rows into %s (ingestion_timestamp=%s)", total, table, ingested_at)
+    finally:
+        conn.close()
+    log.info("Committed %d rows into %s on %s (ingestion_timestamp=%s)",
+             total, table, target, ingested_at)
     return total
 
 
@@ -107,13 +188,21 @@ def append_objects(keys: list[str], table: str, columns: list[str]) -> int:
     max_active_runs=1,
     default_args={"owner": "data-engineering", "retries": 1,
                   "retry_delay": pendulum.duration(minutes=2)},
-    tags=["ghg", "ingestion", "raw"],
+    params={
+        "target": Param(DEFAULT_TARGET, type="string", enum=TARGETS,
+                        description="Warehouse to load: local Docker Postgres or Supabase."),
+    },
+    tags=["ghg", "ingestion", "raw", "dbt"],
     doc_md=__doc__,
 )
 def ghg_corporate_ledger_ingestion():
     @task
-    def setup_raw_tables() -> None:
-        PostgresHook(postgres_conn_id=POSTGRES_CONN_ID).run(DDL_FILE.read_text())
+    def run_migrations() -> list[str]:
+        conn = connect(current_target())
+        try:
+            return apply_migrations(conn)
+        finally:
+            conn.close()
 
     @task
     def upload_to_minio() -> dict:
@@ -134,17 +223,50 @@ def ghg_corporate_ledger_ingestion():
 
     @task
     def ingest_factors_to_postgres() -> int:
-        return append_objects([FACTORS_KEY], "raw.emission_factors", FACTOR_COLUMNS)
+        return append_objects(current_target(), [FACTORS_KEY], "raw.emission_factors",
+                              FACTOR_COLUMNS)
 
     @task
     def ingest_invoices_to_postgres() -> int:
         keys = sorted(obj.object_name for obj in minio_client().list_objects(
             BUCKET, prefix=INVOICES_PREFIX, recursive=True)
             if obj.object_name.endswith(".csv"))
-        return append_objects(keys, "raw.invoices", INVOICE_COLUMNS)
+        return append_objects(current_target(), keys, "raw.invoices", INVOICE_COLUMNS)
 
-    uploaded = upload_to_minio()
-    setup_raw_tables() >> uploaded >> [ingest_factors_to_postgres(), ingest_invoices_to_postgres()]
+    @task
+    def run_dbt() -> None:
+        """``dbt build`` (models + tests) on the target; profiles.yml reads WAREHOUSE_* vars.
+
+        Credentials go through the subprocess env, so they never appear in rendered
+        templates or the command line.
+        """
+        target = current_target()
+        settings = warehouse_settings(target)
+        env = {
+            **os.environ,
+            "WAREHOUSE_HOST": settings["host"],
+            "WAREHOUSE_PORT": str(settings["port"]),
+            "WAREHOUSE_DB": settings["dbname"],
+            "WAREHOUSE_USER": settings["user"],
+            "WAREHOUSE_PASSWORD": settings["password"],
+            "WAREHOUSE_SSLMODE": settings["sslmode"],
+            "DBT_SEND_ANONYMOUS_USAGE_STATS": "false",
+        }
+        work_dir = f"/tmp/dbt/{target}"
+        command = [
+            DBT_BIN, "build", "--no-use-colors",
+            "--project-dir", DBT_PROJECT_DIR, "--profiles-dir", DBT_PROJECT_DIR,
+            "--target-path", f"{work_dir}/target", "--log-path", f"{work_dir}/logs",
+        ]
+        with subprocess.Popen(command, env=env, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True) as process:
+            for line in process.stdout:
+                log.info(line.rstrip())
+        if process.returncode != 0:
+            raise RuntimeError(f"dbt build failed on {target} (exit code {process.returncode})")
+
+    loads = [ingest_factors_to_postgres(), ingest_invoices_to_postgres()]
+    run_migrations() >> upload_to_minio() >> loads >> run_dbt()
 
 
 ghg_corporate_ledger_ingestion()

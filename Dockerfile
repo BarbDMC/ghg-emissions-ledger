@@ -13,3 +13,10 @@ RUN pip install --no-cache-dir \
         psycopg2-binary \
         requests \
         python-dotenv
+
+# dbt lives in its own venv: its pins would otherwise clash with Airflow's constraints.
+# The base image sets PIP_USER=true, which pip rejects inside a venv.
+RUN python -m venv /home/airflow/dbt_venv \
+    && PIP_USER=false /home/airflow/dbt_venv/bin/pip install --no-cache-dir \
+        "dbt-core~=1.10.0" \
+        "dbt-postgres~=1.9.0"

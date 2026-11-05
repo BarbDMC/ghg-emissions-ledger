@@ -20,7 +20,6 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./docker/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro
-      - ./docker/init_raw_tables.sql:/docker-entrypoint-initdb.d/init_raw_tables.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d warehouse"]
       interval: 5s
@@ -79,18 +78,31 @@ services:
       _AIRFLOW_WWW_USER_CREATE: "true"
       _AIRFLOW_WWW_USER_USERNAME: admin
       _AIRFLOW_WWW_USER_PASSWORD: admin
-      AIRFLOW_CONN_GHG_WAREHOUSE: postgresql://postgres:postgres@postgres:5432/warehouse
       GHG_MINIO_ENDPOINT: minio:9000
       GHG_MINIO_ACCESS_KEY: minioadmin
       GHG_MINIO_SECRET_KEY: minioadmin
       GHG_MINIO_BUCKET: climate-invoices
+      # Warehouses the DAG can load; each run picks one with its `target` param.
+      WAREHOUSE_TARGET: ${WAREHOUSE_TARGET:-local}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: warehouse
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      SUPABASE_HOST: ${SUPABASE_HOST:-}
+      SUPABASE_PORT: ${SUPABASE_PORT:-5432}
+      SUPABASE_DB: ${SUPABASE_DB:-postgres}
+      SUPABASE_USER: ${SUPABASE_USER:-}
+      SUPABASE_PASSWORD: ${SUPABASE_PASSWORD:-}
+      SUPABASE_SSLMODE: ${SUPABASE_SSLMODE:-require}
     ports:
       - "8080:8080"
     volumes:
       - ./dags:/opt/airflow/dags
       - ./data:/opt/airflow/data
       - ./scripts:/opt/airflow/scripts
-      - ./docker/init_raw_tables.sql:/opt/airflow/sql/init_raw_tables.sql:ro
+      - ./migrations:/opt/airflow/migrations:ro
+      - ./dbt_project:/opt/airflow/dbt_project
     # Scheduler in the background, webserver as PID 1 so the container stops if it dies.
     command: bash -c "airflow scheduler & exec airflow webserver"
     healthcheck:

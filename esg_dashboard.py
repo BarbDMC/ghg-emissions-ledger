@@ -1,14 +1,30 @@
 """Corporate GHG Scope 1 & 2 emissions dashboard on top of marts.fct_emissions_ledger.
 
 Run: streamlit run esg_dashboard.py
-Connection settings: .streamlit/secrets.toml -> [connections.postgresql]
+
+Data source: WAREHOUSE_TARGET (local | supabase), the same setting the DAG uses.
+  - supabase: [connections.supabase] in .streamlit/secrets.toml, or the SUPABASE_* keys.
+    If it isn't configured, can't be reached or has no ledger yet, the app falls back
+    to local and says why in the sidebar.
+  - local: [connections.local] in secrets, or the local Docker warehouse defaults.
+  - unset: supabase when it's configured, otherwise local.
+Settings are read from Streamlit secrets, then env vars, then .env (re-read on every
+rerun, so edits to .env apply on the next interaction without a restart).
 """
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from dotenv import dotenv_values
+from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
+from streamlit.errors import StreamlitSecretNotFoundError
+
+ENV_FILE = Path(__file__).with_name(".env")
 
 st.set_page_config(
     page_title="Corporate GHG Scope 1 & 2 Emissions Ledger",
@@ -33,6 +49,12 @@ SCOPE_HELP = {
 NUMERIC_COLUMNS = ["activity_amount", "co2e_factor", "co2e_kg", "co2e_tonnes", "cost_amount"]
 PLOTLY_CONFIG = {"displaylogo": False, "responsive": True}
 CACHE_TTL = 600
+
+HEALTHCHECK_SQL = "select 1 from marts.fct_emissions_ledger limit 1"
+SOURCE_BADGES = {
+    "supabase": {"icon": ":material/cloud:", "color": "green"},
+    "local": {"icon": ":material/computer:", "color": "blue"},
+}
 
 FILTER_OPTIONS_SQL = """
     select distinct reporting_year, office_id, ghg_scope
@@ -65,6 +87,79 @@ LEDGER_SQL = """
       and ghg_scope = any(:scopes)
     order by reporting_period, office_id, energy_type
 """
+
+
+def load_secrets() -> dict:
+    try:
+        return st.secrets.to_dict()
+    except StreamlitSecretNotFoundError:
+        return {}
+
+
+SECRETS = load_secrets()
+DOTENV = dotenv_values(ENV_FILE) if ENV_FILE.exists() else {}
+
+
+def setting(key: str, default=None):
+    return SECRETS.get(key) or os.getenv(key) or DOTENV.get(key) or default
+
+
+def supabase_kwargs() -> dict | None:
+    """st.connection kwargs for Supabase, or None when Supabase isn't configured."""
+    if "supabase" in SECRETS.get("connections", {}):
+        return {}
+    if not setting("SUPABASE_HOST"):
+        return None
+    return {
+        "dialect": "postgresql",
+        "driver": "psycopg2",
+        "host": setting("SUPABASE_HOST"),
+        "port": int(setting("SUPABASE_PORT", 5432)),
+        "database": setting("SUPABASE_DB", "postgres"),
+        "username": setting("SUPABASE_USER"),
+        "password": setting("SUPABASE_PASSWORD"),
+        "query": {"sslmode": setting("SUPABASE_SSLMODE", "require")},
+    }
+
+
+def local_kwargs() -> dict:
+    if "local" in SECRETS.get("connections", {}):
+        return {}
+    return {
+        "dialect": "postgresql",
+        "driver": "psycopg2",
+        "host": "localhost",
+        "port": int(setting("POSTGRES_HOST_PORT", 5432)),
+        "database": "warehouse",
+        "username": "postgres",
+        "password": "postgres",
+    }
+
+
+def connect_warehouse():
+    """Connect to WAREHOUSE_TARGET; fall back to the local warehouse if Supabase isn't usable."""
+    kwargs = supabase_kwargs()
+    target = str(setting("WAREHOUSE_TARGET") or ("supabase" if kwargs is not None else "local"))
+    target = target.strip().lower()
+    if target not in ("local", "supabase"):
+        st.sidebar.warning(f"Unknown WAREHOUSE_TARGET {target!r} (use local or supabase). "
+                           "Showing the local warehouse.")
+    elif target == "supabase" and kwargs is None:
+        st.sidebar.warning("WAREHOUSE_TARGET is supabase, but SUPABASE_HOST, SUPABASE_USER and "
+                           "SUPABASE_PASSWORD aren't set. Showing the local warehouse.")
+    elif target == "supabase":
+        try:
+            conn = st.connection("supabase", type="sql", connect_args={"connect_timeout": 5},
+                                 **kwargs)
+            conn.query(HEALTHCHECK_SQL, ttl=CACHE_TTL)
+            return conn, "supabase"
+        except ProgrammingError:
+            st.sidebar.warning("Supabase has no emissions ledger yet: trigger the DAG with "
+                               "target = supabase. Showing the local warehouse.")
+        except SQLAlchemyError as exc:
+            reason = str(getattr(exc, "orig", exc)).strip().splitlines()[0]
+            st.sidebar.warning(f"Can't reach Supabase ({reason}). Showing the local warehouse.")
+    return st.connection("local", type="sql", **local_kwargs()), "local"
 
 
 def office_label(office_id: str) -> str:
@@ -110,7 +205,7 @@ def render_sidebar(options: pd.DataFrame) -> tuple[list[int], list[str], list[st
     scopes = st.sidebar.multiselect("GHG scope", scope_options, default=scope_options,
                                     help="\n\n".join(f"**{s}:** {SCOPE_HELP[s]}"
                                                      for s in scope_options if s in SCOPE_HELP))
-    st.sidebar.caption("Source: marts.fct_emissions_ledger (dbt). "
+    st.sidebar.caption("Source table: marts.fct_emissions_ledger (dbt). "
                        "Year is based on the consumption start date.")
     return (years if year_choice == "All" else [year_choice]), offices, scopes
 
@@ -209,9 +304,11 @@ def render_audit_table(df: pd.DataFrame) -> None:
 
 def main() -> None:
     st.title("Corporate GHG Scope 1 & 2 Emissions Ledger")
+    conn, source = connect_warehouse()
+    st.badge(f"Data source: {source}", icon=SOURCE_BADGES[source]["icon"],
+             color=SOURCE_BADGES[source]["color"])
     st.caption("Invoice-level carbon accounting · GHG Protocol, location-based method")
 
-    conn = st.connection("postgresql", type="sql")
     years, offices, scopes = render_sidebar(load_filter_options(conn))
     if not (years and offices and scopes):
         st.warning("Select at least one office and one scope.")
