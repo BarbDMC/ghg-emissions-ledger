@@ -20,6 +20,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./docker/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro
+      - ./docker/init_raw_tables.sql:/docker-entrypoint-initdb.d/init_raw_tables.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d warehouse"]
       interval: 5s
@@ -78,12 +79,18 @@ services:
       _AIRFLOW_WWW_USER_CREATE: "true"
       _AIRFLOW_WWW_USER_USERNAME: admin
       _AIRFLOW_WWW_USER_PASSWORD: admin
+      AIRFLOW_CONN_GHG_WAREHOUSE: postgresql://postgres:postgres@postgres:5432/warehouse
+      GHG_MINIO_ENDPOINT: minio:9000
+      GHG_MINIO_ACCESS_KEY: minioadmin
+      GHG_MINIO_SECRET_KEY: minioadmin
+      GHG_MINIO_BUCKET: climate-invoices
     ports:
       - "8080:8080"
     volumes:
       - ./dags:/opt/airflow/dags
       - ./data:/opt/airflow/data
       - ./scripts:/opt/airflow/scripts
+      - ./docker/init_raw_tables.sql:/opt/airflow/sql/init_raw_tables.sql:ro
     # Scheduler in the background, webserver as PID 1 so the container stops if it dies.
     command: bash -c "airflow scheduler & exec airflow webserver"
     healthcheck:
