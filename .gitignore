@@ -64,6 +64,7 @@ dbt_packages/
 dbt_modules/
 .user.yml
 profiles.yml
+!dbt_project/profiles.yml
 
 # ---------- Databases (local) ----------
 *.duckdb

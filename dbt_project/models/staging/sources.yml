@@ -1,0 +1,23 @@
+version: 2
+
+sources:
+  - name: raw
+    description: Append-only landing tables loaded by the ghg_corporate_ledger_ingestion DAG.
+    schema: raw
+    tables:
+      - name: invoices
+        description: Energy invoices as received (all TEXT), one row per file row per ingestion.
+        columns:
+          - name: invoice_id
+            tests: [not_null]
+          - name: source_file
+            tests: [not_null]
+          - name: ingestion_timestamp
+            tests: [not_null]
+      - name: emission_factors
+        description: Emission factors (Climatiq or reference fallback), one row per factor per ingestion.
+        columns:
+          - name: factor_id
+            tests: [not_null]
+          - name: ingestion_timestamp
+            tests: [not_null]

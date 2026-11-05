@@ -1,0 +1,8 @@
+version: 2
+
+models:
+  - name: int_invoices_deduplicated
+    description: Latest version of each invoice (by ingestion_timestamp, then issue_date).
+    columns:
+      - name: invoice_id
+        tests: [unique, not_null]

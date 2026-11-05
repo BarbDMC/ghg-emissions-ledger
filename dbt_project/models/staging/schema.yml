@@ -1,0 +1,29 @@
+version: 2
+
+models:
+  - name: stg_invoices
+    description: Typed invoices with normalized activity units (MWh converted to kWh).
+    columns:
+      - name: invoice_id
+        tests: [not_null]
+      - name: energy_type
+        tests:
+          - accepted_values:
+              arguments:
+                values: ["electricity", "diesel"]
+      - name: usage_unit
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["kWh", "liter", "gallon"]
+
+  - name: stg_emission_factors
+    description: Typed emission factors, latest ingestion per country and energy type.
+    columns:
+      - name: co2e_factor
+        tests: [not_null]
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            columns: ["country_code", "energy_type"]

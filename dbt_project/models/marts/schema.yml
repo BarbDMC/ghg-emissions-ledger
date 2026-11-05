@@ -1,0 +1,21 @@
+version: 2
+
+models:
+  - name: fct_emissions_ledger
+    description: One row per invoice (latest version) with its emission factor and CO2e.
+    columns:
+      - name: ledger_id
+        description: MD5 surrogate key of invoice_id.
+        tests: [unique, not_null]
+      - name: invoice_id
+        tests: [unique, not_null]
+      - name: ghg_scope
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["Scope 1", "Scope 2"]
+      - name: co2e_factor
+        tests: [not_null]
+      - name: co2e_kg
+        tests: [not_null]

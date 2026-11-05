@@ -1,0 +1,15 @@
+# Local Docker warehouse. Override per environment with env vars:
+#   from the host:            DBT_HOST=localhost DBT_PORT=5433 (POSTGRES_HOST_PORT in .env)
+#   from inside a container:  DBT_HOST=postgres  DBT_PORT=5432
+ghg_emissions:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('DBT_HOST', 'localhost') }}"
+      port: "{{ env_var('DBT_PORT', '5432') | int }}"
+      dbname: warehouse
+      user: "{{ env_var('DBT_USER', 'postgres') }}"
+      password: "{{ env_var('DBT_PASSWORD', 'postgres') }}"
+      schema: public
+      threads: 4
